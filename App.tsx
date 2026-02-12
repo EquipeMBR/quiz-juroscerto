@@ -6,6 +6,7 @@ import QuizCard from './components/QuizCard';
 import { QUIZ_PAGES } from './constants';
 import { trackPageView, trackAnswer, trackEvent } from './analytics';
 import { Option } from './types';
+import { supabase } from './supabaseClient';
 
 const App: React.FC = () => {
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
@@ -16,6 +17,7 @@ const App: React.FC = () => {
   const [showCTA, setShowCTA] = useState(false);
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, string>>({});
   const [announcement, setAnnouncement] = useState('');
+  const [sessionId] = useState(() => crypto.randomUUID());
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const currentPage = QUIZ_PAGES[currentPageIndex];
@@ -44,9 +46,17 @@ const App: React.FC = () => {
     }
   }, [isFinished, showOfferPage]);
 
-  const handleNext = useCallback((selectedOption: Option) => {
+  const handleNext = useCallback(async (selectedOption: Option) => {
     setSelectedAnswers(prev => ({ ...prev, [currentPage.id]: selectedOption.id }));
     trackAnswer(currentPage.title, selectedOption.label);
+
+    // Save response to database
+    await supabase.from('quiz_responses').insert({
+      session_id: sessionId,
+      question_id: currentPage.id,
+      answer_id: selectedOption.id,
+      answer_label: selectedOption.label
+    });
 
     if (currentPageIndex < QUIZ_PAGES.length - 1) {
       setDirection(1);
@@ -56,7 +66,7 @@ const App: React.FC = () => {
       setIsFinished(true);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-  }, [currentPageIndex, currentPage]);
+  }, [currentPageIndex, currentPage, sessionId]);
 
   const handleBack = useCallback(() => {
     if (currentPageIndex > 0) {
@@ -90,6 +100,18 @@ const App: React.FC = () => {
   };
 
   const diagnosis = getDiagnosis();
+
+  // Save session to database when quiz is finished
+  useEffect(() => {
+    if (isFinished && !showOfferPage) {
+      supabase.from('quiz_sessions').insert({
+        id: sessionId,
+        diagnosis_title: diagnosis.title,
+        diagnosis_status: diagnosis.status,
+        converted: false
+      });
+    }
+  }, [isFinished, showOfferPage, sessionId, diagnosis.title, diagnosis.status]);
 
   // --- PÁGINA DE OFERTA ---
   if (showOfferPage) {
@@ -379,8 +401,12 @@ const App: React.FC = () => {
                 </div>
 
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     trackEvent("CTA Clicked - Diagnostic Redirect");
+                    // Mark session as converted
+                    await supabase.from('quiz_sessions')
+                      .update({ converted: true })
+                      .eq('id', sessionId);
                     setShowOfferPage(true);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
